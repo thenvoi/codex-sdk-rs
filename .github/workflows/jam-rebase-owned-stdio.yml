@@ -1,0 +1,87 @@
+# Keeps thenvoi/tjam's owned-stdio SDK patch current with upstream.
+# See FORK-CHANGES.md for the patch contract and upgrade procedure.
+name: jam-rebase-owned-stdio
+
+on:
+  schedule:
+    - cron: "3 7 * * 1" # weekly, Monday 07:03 UTC; tjam watches at 07:30
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/thehumanworks/codex-sdk-rs.git
+          git fetch upstream main --quiet
+
+      - name: Plan replay
+        id: plan
+        run: |
+          set -euo pipefail
+          target=$(git rev-parse upstream/main)
+          branch=jam-owned-stdio-latest
+          patches=$(git rev-list --reverse HEAD --not --remotes=upstream)
+          [ -n "$patches" ] || {
+            echo "no fork-only commits found on $(git branch --show-current)" >&2
+            exit 1
+          }
+          git fetch origin "$branch" --quiet || true
+          current=false
+          if git show-ref --verify --quiet "refs/remotes/origin/$branch" &&
+             git merge-base --is-ancestor "$target" "origin/$branch"; then
+            current=true
+          fi
+          {
+            echo "target=$target"
+            echo "branch=$branch"
+            echo "current=$current"
+            echo "patches<<EOF"
+            echo "$patches"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Replay patch onto upstream main
+        if: steps.plan.outputs.current == 'false'
+        env:
+          PATCHES: ${{ steps.plan.outputs.patches }}
+        run: |
+          set -euo pipefail
+          git config user.name "jam-fork-bot"
+          git config user.email "dev@thenvoi.com"
+          git checkout -B "${{ steps.plan.outputs.branch }}" "${{ steps.plan.outputs.target }}"
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            if ! git cherry-pick "$sha"; then
+              echo "::error::$sha no longer applies to upstream main at ${{ steps.plan.outputs.target }}; resolve the fork rebase by hand"
+              exit 1
+            fi
+          done <<< "$PATCHES"
+
+      - name: Validate patched SDK
+        if: steps.plan.outputs.current == 'false'
+        run: |
+          cargo fmt --all --check
+          cargo check --workspace
+          cargo test -p codex-app-server-sdk --lib
+
+      - name: Push pre-staged revision
+        if: steps.plan.outputs.current == 'false'
+        run: |
+          git push --force-with-lease origin "HEAD:${{ steps.plan.outputs.branch }}"
+          {
+            echo "## jam-rebase-owned-stdio"
+            echo "Pre-staged `${{ steps.plan.outputs.branch }}` at $(git rev-parse HEAD)"
+            echo "over upstream ${{ steps.plan.outputs.target }}."
+            echo ""
+            echo "thenvoi/tjam's fork-freshness workflow will file an issue if"
+            echo "its pinned revision is older than this branch head."
+          } >> "$GITHUB_STEP_SUMMARY"
