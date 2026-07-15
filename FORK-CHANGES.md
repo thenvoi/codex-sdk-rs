@@ -16,7 +16,7 @@ This is required by long-running embedders that must prove app-server teardown
 and run the same JSONL protocol through wrappers such as `sbx exec -i`. The
 existing detached `spawn_stdio` behavior remains unchanged.
 
-Upstream PR: recorded here once opened.
+Upstream PR: [thehumanworks/codex-sdk-rs#8](https://github.com/thehumanworks/codex-sdk-rs/pull/8).
 
 ## 2. Weekly upstream replay
 
