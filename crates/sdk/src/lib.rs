@@ -21,7 +21,8 @@ pub use api::{
     WebSearchItem, WebSearchMode,
 };
 pub use client::{
-    ClientOptions, CodexClient, StdioConfig, WsConfig, WsServerHandle, WsStartConfig, WsStartMode,
+    ClientOptions, CodexClient, SpawnedStdio, StdioConfig, StdioProcess, WsConfig, WsServerHandle,
+    WsStartConfig, WsStartMode,
 };
 pub use codex_app_server_sdk_macros::{OpenAiSerializable, openai_type};
 pub use error::{ClientError, RpcError};

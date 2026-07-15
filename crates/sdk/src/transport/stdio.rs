@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 use super::{RawFrame, TransportHandle, read_json_frames, transport_channels, write_json_frames};
 use crate::error::ClientError;
@@ -12,17 +14,56 @@ pub async fn spawn_stdio_transport(
     args: &[String],
     env: &HashMap<String, String>,
 ) -> Result<TransportHandle, ClientError> {
-    let mut cmd = Command::new(binary);
-    cmd.args(args)
+    let mut command = stdio_command(binary, args, env, None);
+    command.stderr(Stdio::inherit());
+    let spawned = spawn_stdio_command(command).await?;
+    tokio::spawn(async move {
+        let mut child = spawned.child;
+        let _ = child.wait().await;
+    });
+    Ok(spawned.handle)
+}
+
+pub(crate) struct OwnedStdioTransport {
+    pub handle: TransportHandle,
+    pub child: Child,
+    pub writer_task: JoinHandle<()>,
+}
+
+pub(crate) async fn spawn_owned_stdio_transport(
+    binary: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
+    current_dir: Option<&Path>,
+) -> Result<OwnedStdioTransport, ClientError> {
+    let mut command = stdio_command(binary, args, env, current_dir);
+    command.stderr(Stdio::piped()).kill_on_drop(true);
+    spawn_stdio_command(command).await
+}
+
+fn stdio_command(
+    binary: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
+    current_dir: Option<&Path>,
+) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .args(args)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::piped());
 
     for (key, value) in env {
-        cmd.env(key, value);
+        command.env(key, value);
     }
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    command
+}
 
-    let mut child = cmd.spawn()?;
+async fn spawn_stdio_command(mut command: Command) -> Result<OwnedStdioTransport, ClientError> {
+    let mut child = command.spawn()?;
 
     let mut stdin = child
         .stdin
@@ -35,7 +76,7 @@ pub async fn spawn_stdio_transport(
 
     let (outbound_tx, outbound_rx, inbound_tx, inbound_rx) = transport_channels();
 
-    tokio::spawn(write_json_frames(
+    let writer_task = tokio::spawn(write_json_frames(
         outbound_rx,
         inbound_tx.clone(),
         async move |payload: String| {
@@ -58,12 +99,12 @@ pub async fn spawn_stdio_transport(
         },
     ));
 
-    tokio::spawn(async move {
-        let _ = child.wait().await;
-    });
-
-    Ok(TransportHandle {
-        outbound: outbound_tx,
-        inbound: inbound_rx,
+    Ok(OwnedStdioTransport {
+        handle: TransportHandle {
+            outbound: outbound_tx,
+            inbound: inbound_rx,
+        },
+        child,
+        writer_task,
     })
 }
