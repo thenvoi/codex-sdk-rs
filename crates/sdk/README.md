@@ -164,6 +164,33 @@ struct Reply {
 }
 ```
 
+Embedders that must own the app-server lifecycle can request an owned process
+handle and set the child working directory without changing the executable that
+users install:
+
+```rust
+use codex_app_server_sdk::{CodexClient, StdioConfig};
+use std::path::Path;
+use std::time::Duration;
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let mut spawned = CodexClient::spawn_stdio_owned(
+    StdioConfig::default(),
+    Some(Path::new("/path/to/project")),
+).await?;
+
+let client = spawned.client.clone();
+// Initialize and use `client` as usual.
+let (_status, forced) = spawned.process.shutdown(Duration::from_secs(3)).await?;
+println!("forced shutdown: {forced}");
+# Ok(())
+# }
+```
+
+`StdioProcess::take_stderr` supports bounded diagnostic capture. Dropping the
+handle requests child termination, but callers should use `shutdown` to close
+stdin first and observe whether a forced kill was needed.
+
 ## Websocket flow
 
 ```rust

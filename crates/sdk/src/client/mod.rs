@@ -4,13 +4,16 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Child;
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::process::{Child as TokioChild, ChildStderr};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::api::{Codex, ResumeThread, Thread, ThreadOptions};
 use crate::error::{ClientError, IncomingClassified, RpcError, classify_incoming};
@@ -22,7 +25,7 @@ use crate::protocol::responses;
 use crate::protocol::server_requests;
 use crate::protocol::shared::{EmptyObject, RequestId};
 use crate::transport::TransportHandle;
-use crate::transport::stdio::spawn_stdio_transport;
+use crate::transport::stdio::{spawn_owned_stdio_transport, spawn_stdio_transport};
 use crate::transport::ws::connect_ws_transport;
 use crate::transport::ws_daemon::{ensure_local_ws_app_server, start_ws_server};
 
@@ -125,6 +128,85 @@ impl Default for StdioConfig {
             env: HashMap::new(),
             options: ClientOptions::default(),
         }
+    }
+}
+
+/// A stdio client together with exclusive ownership of its app-server child.
+///
+/// Use this when the embedding application, rather than the SDK, must observe
+/// and deterministically stop the child process. Dropping [`StdioProcess`]
+/// requests termination; callers should prefer [`StdioProcess::shutdown`] so
+/// they can observe the exit status.
+pub struct SpawnedStdio {
+    pub client: CodexClient,
+    pub process: StdioProcess,
+}
+
+/// Lifecycle handle for a stdio app-server child.
+pub struct StdioProcess {
+    child: TokioChild,
+    writer_task: Option<JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for StdioProcess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StdioProcess")
+            .field("id", &self.child.id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl StdioProcess {
+    /// Host process id, when the platform exposes one.
+    #[must_use]
+    pub fn id(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    /// Takes the child's stderr stream for bounded diagnostic capture.
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
+    }
+
+    /// Non-blocking child status check.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    /// Waits for the child to exit without forcing termination.
+    pub async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        self.child.wait().await
+    }
+
+    /// Closes the protocol stdin stream. This is idempotent.
+    pub fn close_stdin(&mut self) {
+        if let Some(task) = self.writer_task.take() {
+            task.abort();
+        }
+    }
+
+    /// Closes stdin and waits for a graceful exit, then kills on timeout.
+    ///
+    /// Returns the final status and whether forced termination was required.
+    pub async fn shutdown(
+        &mut self,
+        graceful_timeout: Duration,
+    ) -> std::io::Result<(ExitStatus, bool)> {
+        self.close_stdin();
+        match tokio::time::timeout(graceful_timeout, self.child.wait()).await {
+            Ok(status) => status.map(|status| (status, false)),
+            Err(_) => {
+                self.child.start_kill()?;
+                self.child.wait().await.map(|status| (status, true))
+            }
+        }
+    }
+}
+
+impl Drop for StdioProcess {
+    fn drop(&mut self) {
+        self.close_stdin();
+        let _ = self.child.start_kill();
     }
 }
 
@@ -472,6 +554,33 @@ impl CodexClient {
     pub async fn spawn_stdio(config: StdioConfig) -> Result<Self, ClientError> {
         let handle = spawn_stdio_transport(&config.codex_binary, &config.args, &config.env).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
+    }
+
+    /// Spawns a stdio app-server while returning exclusive process ownership.
+    ///
+    /// `current_dir` configures the child process working directory without
+    /// changing the existing [`StdioConfig`] struct-literal API. The caller is
+    /// responsible for invoking [`StdioProcess::shutdown`] and may take stderr
+    /// for bounded diagnostics.
+    pub async fn spawn_stdio_owned(
+        config: StdioConfig,
+        current_dir: Option<&Path>,
+    ) -> Result<SpawnedStdio, ClientError> {
+        let spawned = spawn_owned_stdio_transport(
+            &config.codex_binary,
+            &config.args,
+            &config.env,
+            current_dir,
+        )
+        .await?;
+        let client = Self::from_transport(spawned.handle, config.options.default_timeout);
+        Ok(SpawnedStdio {
+            client,
+            process: StdioProcess {
+                child: spawned.child,
+                writer_task: Some(spawned.writer_task),
+            },
+        })
     }
 
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
@@ -1457,5 +1566,81 @@ mod tests {
                 .is_err(),
             "did not expect auto-response when handler is absent"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn owned_stdio_sets_cwd_and_closes_stdin_before_forced_kill() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let cwd = std::env::temp_dir().join(format!(
+            "codex-sdk-owned-stdio-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&cwd).expect("create test cwd");
+        let marker = cwd.join("cwd.txt");
+
+        let mut config = StdioConfig {
+            codex_binary: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "pwd > \"$CODEX_SDK_CWD_MARKER\"; while IFS= read -r _; do :; done".to_string(),
+            ],
+            ..StdioConfig::default()
+        };
+        config.env.insert(
+            "CODEX_SDK_CWD_MARKER".to_string(),
+            marker.to_string_lossy().into_owned(),
+        );
+
+        let mut spawned = CodexClient::spawn_stdio_owned(config, Some(&cwd))
+            .await
+            .expect("spawn owned stdio");
+        assert!(spawned.process.id().is_some());
+
+        let marker_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !marker.exists() && tokio::time::Instant::now() < marker_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let observed = std::fs::read_to_string(&marker).expect("read cwd marker");
+        assert_eq!(
+            std::fs::canonicalize(observed.trim()).expect("canonical observed cwd"),
+            std::fs::canonicalize(&cwd).expect("canonical expected cwd")
+        );
+
+        let (status, forced) = spawned
+            .process
+            .shutdown(Duration::from_secs(2))
+            .await
+            .expect("shutdown owned stdio");
+        assert!(status.success());
+        assert!(!forced, "stdin EOF should permit graceful shutdown");
+
+        std::fs::remove_dir_all(cwd).expect("remove test cwd");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn owned_stdio_forces_termination_after_grace_period() {
+        let config = StdioConfig {
+            codex_binary: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "while :; do IFS= read -r _ || :; done".to_string(),
+            ],
+            ..StdioConfig::default()
+        };
+        let mut spawned = CodexClient::spawn_stdio_owned(config, None)
+            .await
+            .expect("spawn owned stdio");
+
+        let (_status, forced) = spawned
+            .process
+            .shutdown(Duration::from_millis(20))
+            .await
+            .expect("force shutdown owned stdio");
+        assert!(forced, "non-exiting child must be killed after timeout");
     }
 }
