@@ -90,6 +90,8 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+`StreamedTurn::turn_id()` returns the exact provider turn id from the successful
+`turn/start` response for durable correlation and replay-safe observation keys.
 
 Resume a recorded thread with a typed resume target:
 
