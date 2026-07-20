@@ -4,6 +4,13 @@ Rev-pinned fork consumed by [thenvoi/tjam](https://github.com/thenvoi/tjam).
 The fork changes only the Rust client library linked into Jam; users continue
 installing and running the stock OpenAI Codex CLI and app-server.
 
+## Streamed turn identity
+
+`StreamedTurn::turn_id()` exposes the exact provider id returned by the
+successful `turn/start` response. Jam uses it for idempotent per-turn usage
+observations; the Codex executable, authentication, transport, and event stream
+remain unchanged.
+
 ## 1. Owned stdio lifecycle and child working directory
 
 `CodexClient::spawn_stdio_owned` returns the normal protocol client together
