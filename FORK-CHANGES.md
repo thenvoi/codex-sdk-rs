@@ -22,9 +22,10 @@ Upstream PR: [thehumanworks/codex-sdk-rs#8](https://github.com/thehumanworks/cod
 
 `.github/workflows/jam-rebase-owned-stdio.yml` runs every Monday and on demand.
 It derives every fork-only commit from the default maintenance branch, replays
-that patch set onto current `thehumanworks/codex-sdk-rs` `main`, validates the
-workspace plus SDK unit tests, and force-with-lease updates
-`jam-owned-stdio-latest` only when upstream advances.
+that patch set onto current `thehumanworks/codex-sdk-rs` `main`, compares the
+resulting tree with `jam-owned-stdio-latest`, validates the workspace plus SDK
+unit tests, and force-with-lease updates the generated branch only when either
+upstream or the maintained fork patch set changes.
 
 A red run means upstream drifted under the patch and requires a manual rebase.
 When the staged branch advances, tjam's `fork-freshness` workflow files an issue

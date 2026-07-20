@@ -35,22 +35,16 @@ jobs:
             exit 1
           }
           git fetch origin "$branch" --quiet || true
-          current=false
-          if git show-ref --verify --quiet "refs/remotes/origin/$branch" &&
-             git merge-base --is-ancestor "$target" "origin/$branch"; then
-            current=true
-          fi
           {
             echo "target=$target"
             echo "branch=$branch"
-            echo "current=$current"
             echo "patches<<EOF"
             echo "$patches"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Replay patch onto upstream main
-        if: steps.plan.outputs.current == 'false'
+        id: replay
         env:
           PATCHES: ${{ steps.plan.outputs.patches }}
         run: |
@@ -65,23 +59,37 @@ jobs:
               exit 1
             fi
           done <<< "$PATCHES"
+          changed=true
+          if git show-ref --verify --quiet "refs/remotes/origin/${{ steps.plan.outputs.branch }}" &&
+             git diff --quiet "origin/${{ steps.plan.outputs.branch }}" HEAD; then
+            changed=false
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: Validate patched SDK
-        if: steps.plan.outputs.current == 'false'
+        if: steps.replay.outputs.changed == 'true'
         run: |
           cargo fmt --all --check
           cargo check --workspace
           cargo test -p codex-app-server-sdk --lib
 
       - name: Push pre-staged revision
-        if: steps.plan.outputs.current == 'false'
+        if: steps.replay.outputs.changed == 'true'
         run: |
           git push --force-with-lease origin "HEAD:${{ steps.plan.outputs.branch }}"
           {
             echo "## jam-rebase-owned-stdio"
-            echo "Pre-staged `${{ steps.plan.outputs.branch }}` at $(git rev-parse HEAD)"
+            echo "Pre-staged \`${{ steps.plan.outputs.branch }}\` at $(git rev-parse HEAD)"
             echo "over upstream ${{ steps.plan.outputs.target }}."
             echo ""
             echo "thenvoi/tjam's fork-freshness workflow will file an issue if"
             echo "its pinned revision is older than this branch head."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report current revision
+        if: steps.replay.outputs.changed == 'false'
+        run: |
+          {
+            echo "## jam-rebase-owned-stdio"
+            echo "The generated branch already has the expected upstream tree and fork patch set."
           } >> "$GITHUB_STEP_SUMMARY"
