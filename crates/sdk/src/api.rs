@@ -698,11 +698,20 @@ pub struct Turn {
 pub type RunResult = Turn;
 
 pub struct StreamedTurn {
+    turn_id: String,
     receiver: mpsc::Receiver<Result<ThreadEvent, ClientError>>,
     task: JoinHandle<()>,
 }
 
 impl StreamedTurn {
+    /// Provider turn id returned by the successful `turn/start` response.
+    ///
+    /// This remains available for the handle's lifetime so callers can key
+    /// durable, replay-safe observations without parsing notification payloads.
+    pub fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+
     pub async fn next_event(&mut self) -> Option<Result<ThreadEvent, ClientError>> {
         self.receiver.recv().await
     }
@@ -1599,11 +1608,16 @@ impl Thread {
             return Err(ClientError::TransportClosed);
         }
 
+        let streamed_turn_id = turn_id.clone();
         let task = tokio::spawn(async move {
             pump_turn_events(server_events, tx, thread_id, turn_id).await;
         });
 
-        Ok(StreamedTurn { receiver: rx, task })
+        Ok(StreamedTurn {
+            turn_id: streamed_turn_id,
+            receiver: rx,
+            task,
+        })
     }
 
     pub async fn run(

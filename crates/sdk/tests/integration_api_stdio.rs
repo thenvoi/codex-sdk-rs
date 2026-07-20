@@ -179,6 +179,10 @@ async fn run_streamed_emits_turn_lifecycle_events() -> Result<(), Box<dyn std::e
     let mut streamed = thread
         .run_streamed("Reply with exactly: ok", TurnOptions::default())
         .await?;
+    assert!(
+        !streamed.turn_id().is_empty(),
+        "streamed turn must expose the provider turn id returned by turn/start"
+    );
 
     let deadline = Instant::now() + TEST_TIMEOUT;
     let mut saw_started = false;

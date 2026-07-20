@@ -73,6 +73,8 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+`StreamedTurn::turn_id()` returns the exact provider turn id from the successful
+`turn/start` response for durable correlation and replay-safe observation keys.
 
 `AgentMessageItem.phase` mirrors the app-server’s optional `agentMessage.phase` field (`commentary` or `final_answer`). Use `message.is_final_answer()` to identify the final turn message from `ItemCompleted`; `Turn.final_response` and `ask(...)` already prefer the `final_answer` item when the server provides it and otherwise fall back to the last completed agent message.
 
