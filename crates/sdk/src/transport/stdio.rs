@@ -9,6 +9,15 @@ use tokio::task::JoinHandle;
 use super::{RawFrame, TransportHandle, read_json_frames, transport_channels, write_json_frames};
 use crate::error::ClientError;
 
+#[cfg(windows)]
+fn no_console_window(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn no_console_window(_command: &mut Command) {}
+
 pub async fn spawn_stdio_transport(
     binary: &str,
     args: &[String],
@@ -67,6 +76,7 @@ fn stdio_command(
     if let Some(current_dir) = current_dir {
         command.current_dir(current_dir);
     }
+    no_console_window(&mut command);
     command
 }
 
