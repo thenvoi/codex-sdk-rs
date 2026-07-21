@@ -179,8 +179,8 @@ async fn test_connect_ws_does_not_start_daemon() {
 #[tokio::test]
 async fn start_ws_daemon_supports_separate_listen_and_connect_urls()
 -> Result<(), Box<dyn std::error::Error>> {
-    let connect_url = reserve_local_ws_url()?;
-    let listen_url = connect_url.replacen("127.0.0.1", "0.0.0.0", 1);
+    let listen_url = reserve_local_ws_url()?;
+    let connect_url = format!("{listen_url}/");
 
     let server = CodexClient::start_ws_daemon(ws_start_config(&listen_url, &connect_url)).await?;
     assert_eq!(server.mode(), WsStartMode::Daemon);
