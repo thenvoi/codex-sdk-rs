@@ -31,6 +31,25 @@ A red run means upstream drifted under the patch and requires a manual rebase.
 When the staged branch advances, tjam's `fork-freshness` workflow files an issue
 until `Cargo.toml` and `Cargo.lock` pin the new revision.
 
+### Manual conflict recovery
+
+1. Record the failing workflow's upstream target and fork-only commit list.
+2. Start a candidate branch at the latest `upstream/main` and replay those
+   commits in order.
+3. If upstream now provides a fork capability, omit that obsolete patch only
+   after verifying the equivalent public API and its integration coverage.
+4. Resolve remaining conflicts by preserving current upstream behavior and the
+   smallest still-required fork delta, then run the workflow validation commands.
+5. After review, update both `jam-owned-stdio` and
+   `jam-owned-stdio-latest` to the same validated linear history with
+   `--force-with-lease`, and dispatch this workflow once. Do not merge a recovery
+   branch into the maintenance branch: the merge commit would itself become a
+   fork-only replay input.
+
+The July 2026 streamed-turn identity patch is intentionally absent from the
+current fork delta because upstream now exposes `StreamedTurn::turn_id()` and
+tests that the successful `turn/start` provider ID remains available.
+
 ## Upgrade procedure
 
 1. Inspect the latest successful `jam-rebase-owned-stdio` run and its staged SHA.
