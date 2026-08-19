@@ -37,7 +37,10 @@ pub(crate) fn thread_event_to_json(event: &ThreadEvent) -> Value {
             serde_json::json!({ "type": "thread.started", "threadId": thread_id })
         }
         ThreadEvent::TurnStarted => serde_json::json!({ "type": "turn.started" }),
-        ThreadEvent::TurnCompleted { usage } => {
+        ThreadEvent::TurnCompleted {
+            usage,
+            terminal_status,
+        } => {
             let mut obj = serde_json::json!({ "type": "turn.completed" });
             if let Some(usage) = usage {
                 obj["usage"] = serde_json::json!({
@@ -45,6 +48,9 @@ pub(crate) fn thread_event_to_json(event: &ThreadEvent) -> Value {
                     "cachedInputTokens": usage.cached_input_tokens,
                     "outputTokens": usage.output_tokens,
                 });
+            }
+            if let Some(terminal_status) = terminal_status {
+                obj["terminalStatus"] = serde_json::json!(terminal_status);
             }
             obj
         }
