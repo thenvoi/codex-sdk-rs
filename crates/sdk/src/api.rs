@@ -525,14 +525,30 @@ impl Drop for StreamedTurn {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ThreadEvent {
-    ThreadStarted { thread_id: String },
+    ThreadStarted {
+        thread_id: String,
+    },
     TurnStarted,
-    TurnCompleted { usage: Option<Usage> },
-    TurnFailed { error: ThreadError },
-    ItemStarted { item: ThreadItem },
-    ItemUpdated { item: ThreadItem },
-    ItemCompleted { item: ThreadItem },
-    Error { message: String },
+    TurnCompleted {
+        usage: Option<Usage>,
+        /// Native app-server terminal status. Older servers can omit this field.
+        terminal_status: Option<String>,
+    },
+    TurnFailed {
+        error: ThreadError,
+    },
+    ItemStarted {
+        item: ThreadItem,
+    },
+    ItemUpdated {
+        item: ThreadItem,
+    },
+    ItemCompleted {
+        item: ThreadItem,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1231,7 +1247,9 @@ impl Thread {
                     );
                     items.push(item);
                 }
-                ThreadEvent::TurnCompleted { usage: completed } => {
+                ThreadEvent::TurnCompleted {
+                    usage: completed, ..
+                } => {
                     usage = completed;
                     saw_terminal = true;
                     break;
@@ -1378,7 +1396,12 @@ async fn pump_turn_events(
                             Some(&turn_id),
                         ) =>
                 {
-                    let status = payload.turn.status.unwrap_or_default().to_ascii_lowercase();
+                    let terminal_status =
+                        payload.turn.status.map(|status| status.trim().to_owned());
+                    let status = terminal_status
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
                     if status == "failed" {
                         let message = payload
                             .turn
@@ -1393,7 +1416,10 @@ async fn pump_turn_events(
 
                     let usage = parse_usage_from_turn_extra(&payload.turn.extra)
                         .or_else(|| latest_usage.clone());
-                    send_or_break!(Ok(ThreadEvent::TurnCompleted { usage }));
+                    send_or_break!(Ok(ThreadEvent::TurnCompleted {
+                        usage,
+                        terminal_status,
+                    }));
                     break;
                 }
                 ServerNotification::ThreadTokenUsageUpdated(payload)
@@ -2861,6 +2887,74 @@ collaboration_mode = "plan"
         );
 
         pump.abort();
+    }
+
+    async fn assert_completed_terminal_status(
+        wire_status: Option<&str>,
+        expected_status: Option<&str>,
+    ) {
+        let (server_tx, server_rx) = tokio::sync::broadcast::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let pump = tokio::spawn(pump_turn_events(
+            server_rx,
+            event_tx,
+            "thread_1".to_string(),
+            "turn_1".to_string(),
+        ));
+
+        let mut turn_extra = Map::new();
+        turn_extra.insert(
+            "threadId".to_string(),
+            Value::String("thread_1".to_string()),
+        );
+        turn_extra.insert("turnId".to_string(), Value::String("turn_1".to_string()));
+        server_tx
+            .send(ServerEvent::Notification(
+                ServerNotification::TurnCompleted(
+                    crate::protocol::notifications::TurnCompletedNotification {
+                        turn: responses::Turn {
+                            id: "turn_1".to_string(),
+                            status: wire_status.map(str::to_owned),
+                            extra: turn_extra,
+                            ..Default::default()
+                        },
+                        extra: Map::new(),
+                    },
+                ),
+            ))
+            .expect("send turn completion");
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("turn completed event")
+                .expect("event channel open")
+                .expect("thread event ok"),
+            ThreadEvent::TurnCompleted {
+                usage: None,
+                terminal_status: expected_status.map(str::to_owned),
+            }
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("pump task ends")
+            .expect("pump task join");
+    }
+
+    #[tokio::test]
+    async fn pump_turn_events_preserves_completed_terminal_status() {
+        assert_completed_terminal_status(Some("completed"), Some("completed")).await;
+    }
+
+    #[tokio::test]
+    async fn pump_turn_events_preserves_interrupted_terminal_status() {
+        assert_completed_terminal_status(Some("interrupted"), Some("interrupted")).await;
+    }
+
+    #[tokio::test]
+    async fn pump_turn_events_preserves_absent_terminal_status() {
+        assert_completed_terminal_status(None, None).await;
     }
 
     #[tokio::test]
