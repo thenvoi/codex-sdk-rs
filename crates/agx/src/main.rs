@@ -762,7 +762,7 @@ async fn main() -> anyhow::Result<()> {
 
     while let Some(next) = streamed.next_event().await {
         match next? {
-            ThreadEvent::TurnCompleted { usage } => {
+            ThreadEvent::TurnCompleted { usage, .. } => {
                 if cli.verbose
                     && let Some(usage) = usage
                 {
