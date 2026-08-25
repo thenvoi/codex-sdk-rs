@@ -73,6 +73,7 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+`ThreadEvent::TurnCompleted.terminal_status` preserves the optional native app-server status, including `completed` and `interrupted`.
 `ThreadEventRenderer` converts those events into terminal-agnostic, typed
 markdown fragments, streams text deltas without repeating completed snapshots,
 and provides a visible fallback for every `ThreadItem` variant. Display-only
@@ -80,7 +81,9 @@ items with no text, such as empty reasoning items, are suppressed.
 
 `AgentMessageItem.phase` mirrors the app-server’s optional `agentMessage.phase` field (`commentary` or `final_answer`). Use `message.is_final_answer()` to identify the final turn message from `ItemCompleted`; `Turn.final_response` and `ask(...)` already prefer the `final_answer` item when the server provides it and otherwise fall back to the last completed agent message.
 
-`TurnOptionsBuilder` supports raw JSON schemas (`.output_schema(...)`) and typed schema generation (`.output_schema_for::<T>()`) for `output_schema`, plus per-turn overrides for `cwd`, `model`, `model_provider`, reasoning, personality, approval/sandbox, collaboration mode, and raw extra fields.
+`TurnOptionsBuilder` supports raw JSON schemas (`.output_schema(...)`) and typed schema generation (`.output_schema_for::<T>()`) for `output_schema`, plus per-turn overrides for `cwd`, `model`, explicit reasoning effort, personality, approval/sandbox, collaboration mode, and raw extra fields. Set model providers and web-search defaults on `ThreadOptionsBuilder`; Codex does not accept them on `turn/start`.
+
+`ThreadOptionsBuilder` serializes reasoning effort as `config.model_reasoning_effort` and web search as `config.web_search`. Typed settings override the matching generic config key. An explicit `web_search_mode` overrides `web_search_enabled`, which maps `true` to `live` and `false` to `disabled`.
 
 Set `.service_tier(ServiceTier::Default)` or
 `.service_tier(ServiceTier::Fast)` on `ThreadOptionsBuilder` to apply a tier to

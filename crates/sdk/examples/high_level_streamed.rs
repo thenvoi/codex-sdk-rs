@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             | ThreadEvent::ItemCompleted { item } => {
                 let _ = item;
             }
-            ThreadEvent::TurnCompleted { usage } => {
+            ThreadEvent::TurnCompleted { usage, .. } => {
                 println!("turn completed: usage={usage:?}");
                 break;
             }
