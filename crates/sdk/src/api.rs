@@ -402,7 +402,6 @@ options_builder!(TurnOptions, TurnOptionsBuilder, {
     [value] output_schema: Value;
     [into_string] working_directory: String;
     [into_string] model: String;
-    [into_string] model_provider: String;
     [copy] model_reasoning_effort: ModelReasoningEffort;
     [copy] model_reasoning_summary: ModelReasoningSummary;
     [copy] service_tier: ServiceTier;
@@ -411,8 +410,6 @@ options_builder!(TurnOptions, TurnOptionsBuilder, {
     [value] sandbox_policy: Value;
     [value] collaboration_mode: CollaborationMode;
     [bool] skip_git_repo_check: bool;
-    [copy] web_search_mode: WebSearchMode;
-    [bool] web_search_enabled: bool;
     [bool] network_access_enabled: bool;
     [vec_push add_directory] additional_directories: Vec<String>;
     [map_insert insert_extra] extra: Map<String, Value>;
@@ -1536,17 +1533,13 @@ fn parse_timestamp(value: Option<&Value>) -> Option<i64> {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct ResolvedOptions {
     model: Option<String>,
-    model_provider: Option<String>,
     working_directory: Option<String>,
-    model_reasoning_effort: Option<ModelReasoningEffort>,
     model_reasoning_summary: Option<ModelReasoningSummary>,
     service_tier: Option<ServiceTier>,
     personality: Option<Personality>,
     approval_policy: Option<ApprovalMode>,
     sandbox_policy: Option<Value>,
     skip_git_repo_check: Option<bool>,
-    web_search_mode: Option<WebSearchMode>,
-    web_search_enabled: Option<bool>,
     network_access_enabled: Option<bool>,
     additional_directories: Option<Vec<String>>,
     collaboration_mode: Option<CollaborationMode>,
@@ -1556,17 +1549,13 @@ impl ResolvedOptions {
     fn from_thread(options: &ThreadOptions) -> Self {
         Self {
             model: options.model.clone(),
-            model_provider: options.model_provider.clone(),
             working_directory: options.working_directory.clone(),
-            model_reasoning_effort: options.model_reasoning_effort,
             model_reasoning_summary: options.model_reasoning_summary,
             service_tier: options.service_tier,
             personality: options.personality,
             approval_policy: options.approval_policy,
             sandbox_policy: options.sandbox_policy.clone(),
             skip_git_repo_check: options.skip_git_repo_check,
-            web_search_mode: options.web_search_mode,
-            web_search_enabled: options.web_search_enabled,
             network_access_enabled: options.network_access_enabled,
             additional_directories: options.additional_directories.clone(),
             collaboration_mode: options.collaboration_mode.clone(),
@@ -1578,17 +1567,10 @@ impl ResolvedOptions {
     fn merge(options: &ThreadOptions, turn_options: &TurnOptions) -> Self {
         Self {
             model: turn_options.model.clone().or_else(|| options.model.clone()),
-            model_provider: turn_options
-                .model_provider
-                .clone()
-                .or_else(|| options.model_provider.clone()),
             working_directory: turn_options
                 .working_directory
                 .clone()
                 .or_else(|| options.working_directory.clone()),
-            model_reasoning_effort: turn_options
-                .model_reasoning_effort
-                .or(options.model_reasoning_effort),
             model_reasoning_summary: turn_options
                 .model_reasoning_summary
                 .or(options.model_reasoning_summary),
@@ -1602,10 +1584,6 @@ impl ResolvedOptions {
             skip_git_repo_check: turn_options
                 .skip_git_repo_check
                 .or(options.skip_git_repo_check),
-            web_search_mode: turn_options.web_search_mode.or(options.web_search_mode),
-            web_search_enabled: turn_options
-                .web_search_enabled
-                .or(options.web_search_enabled),
             network_access_enabled: turn_options
                 .network_access_enabled
                 .or(options.network_access_enabled),
@@ -1634,15 +1612,6 @@ fn insert_common_extras(extra: &mut Map<String, Value>, resolved: &ResolvedOptio
     if let Some(skip) = resolved.skip_git_repo_check {
         extra.insert("skipGitRepoCheck".to_string(), Value::Bool(skip));
     }
-    if let Some(mode) = resolved.web_search_mode {
-        extra.insert(
-            "webSearchMode".to_string(),
-            Value::String(mode.as_str().to_string()),
-        );
-    }
-    if let Some(enabled) = resolved.web_search_enabled {
-        extra.insert("webSearchEnabled".to_string(), Value::Bool(enabled));
-    }
     if let Some(network) = resolved.network_access_enabled {
         extra.insert("networkAccessEnabled".to_string(), Value::Bool(network));
     }
@@ -1665,6 +1634,36 @@ fn insert_common_extras(extra: &mut Map<String, Value>, resolved: &ResolvedOptio
     }
 }
 
+/// Builds thread configuration without discarding generic config keys.
+/// Typed SDK settings win over a duplicate generic key. An explicit
+/// `web_search_mode` wins over the boolean compatibility setting.
+fn thread_config(options: &ThreadOptions) -> Option<Map<String, Value>> {
+    let mut config = options.config.clone().unwrap_or_default();
+
+    if let Some(effort) = options.model_reasoning_effort {
+        config.insert(
+            "model_reasoning_effort".to_string(),
+            Value::String(effort.as_str().to_string()),
+        );
+    }
+    if let Some(web_search) = options.web_search_mode.or_else(|| {
+        options.web_search_enabled.map(|enabled| {
+            if enabled {
+                WebSearchMode::Live
+            } else {
+                WebSearchMode::Disabled
+            }
+        })
+    }) {
+        config.insert(
+            "web_search".to_string(),
+            Value::String(web_search.as_str().to_string()),
+        );
+    }
+
+    (!config.is_empty()).then_some(config)
+}
+
 fn dynamic_tools_value(dynamic_tools: &[DynamicToolSpec]) -> Value {
     Value::Array(
         dynamic_tools
@@ -1677,9 +1676,6 @@ fn dynamic_tools_value(dynamic_tools: &[DynamicToolSpec]) -> Value {
 fn build_thread_start_params(options: &ThreadOptions) -> requests::ThreadStartParams {
     let mut extra = Map::new();
     insert_common_extras(&mut extra, &ResolvedOptions::from_thread(options));
-    if let Some(config) = &options.config {
-        extra.insert("config".to_string(), Value::Object(config.clone()));
-    }
     if let Some(dynamic_tools) = &options.dynamic_tools {
         extra.insert(
             "dynamicTools".to_string(),
@@ -1702,9 +1698,7 @@ fn build_thread_start_params(options: &ThreadOptions) -> requests::ThreadStartPa
             .map(|mode| mode.as_str().to_string()),
         sandbox: options.sandbox_mode.map(|mode| mode.as_str().to_string()),
         sandbox_policy: options.sandbox_policy.clone(),
-        effort: options
-            .model_reasoning_effort
-            .map(|effort| effort.as_str().to_string()),
+        config: thread_config(options),
         summary: options
             .model_reasoning_summary
             .map(|summary| summary.as_str().to_string()),
@@ -1725,12 +1719,6 @@ fn build_thread_resume_params(
     if let Some(policy) = &options.sandbox_policy {
         extra.insert("sandboxPolicy".to_string(), policy.clone());
     }
-    if let Some(effort) = options.model_reasoning_effort {
-        extra.insert(
-            "effort".to_string(),
-            Value::String(effort.as_str().to_string()),
-        );
-    }
     if let Some(summary) = options.model_reasoning_summary {
         extra.insert(
             "summary".to_string(),
@@ -1739,12 +1727,6 @@ fn build_thread_resume_params(
     }
     if let Some(ephemeral) = options.ephemeral {
         extra.insert("ephemeral".to_string(), Value::Bool(ephemeral));
-    }
-    if let Some(dynamic_tools) = &options.dynamic_tools {
-        extra.insert(
-            "dynamicTools".to_string(),
-            dynamic_tools_value(dynamic_tools),
-        );
     }
     if let Some(enabled) = options.experimental_raw_events {
         extra.insert("experimentalRawEvents".to_string(), Value::Bool(enabled));
@@ -1761,7 +1743,7 @@ fn build_thread_resume_params(
             .approval_policy
             .map(|mode| mode.as_str().to_string()),
         sandbox: options.sandbox_mode.map(|mode| mode.as_str().to_string()),
-        config: options.config.clone(),
+        config: thread_config(options),
         base_instructions: options.base_instructions.clone(),
         developer_instructions: options.developer_instructions.clone(),
         personality: options.personality.map(|value| value.as_str().to_string()),
@@ -1769,6 +1751,25 @@ fn build_thread_resume_params(
         extra,
     }
 }
+
+const TURN_START_TYPED_OR_FORBIDDEN_EXTRA_KEYS: &[&str] = &[
+    "threadId",
+    "input",
+    "cwd",
+    "model",
+    "modelProvider",
+    "effort",
+    "summary",
+    "personality",
+    "outputSchema",
+    "approvalPolicy",
+    "sandboxPolicy",
+    "config",
+    "webSearch",
+    "webSearchEnabled",
+    "webSearchMode",
+    "web_search",
+];
 
 fn build_turn_start_params(
     thread_id: &str,
@@ -1782,7 +1783,9 @@ fn build_turn_start_params(
     insert_common_extras(&mut extra, &resolved);
     if let Some(extra_overrides) = &turn_options.extra {
         for (key, value) in extra_overrides {
-            extra.insert(key.clone(), value.clone());
+            if !TURN_START_TYPED_OR_FORBIDDEN_EXTRA_KEYS.contains(&key.as_str()) {
+                extra.insert(key.clone(), value.clone());
+            }
         }
     }
 
@@ -1791,8 +1794,7 @@ fn build_turn_start_params(
         input: normalize_input(input),
         cwd: resolved.working_directory,
         model: resolved.model,
-        model_provider: resolved.model_provider,
-        effort: resolved
+        effort: turn_options
             .model_reasoning_effort
             .map(|effort| effort.as_str().to_string()),
         summary: resolved
@@ -2337,6 +2339,9 @@ fn parse_mcp_tool_call_status(status: &str) -> McpToolCallStatus {
         _ => McpToolCallStatus::Unknown,
     }
 }
+
+#[cfg(test)]
+mod request_serialization_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3185,43 +3190,26 @@ collaboration_mode = "plan"
             thread_params.sandbox_policy,
             Some(json!({"type": "dangerFullAccess"}))
         );
-        assert_eq!(thread_params.effort.as_deref(), Some("none"));
         assert_eq!(thread_params.summary.as_deref(), Some("auto"));
         assert_eq!(thread_params.extra.get("serviceTier"), Some(&json!("fast")));
         assert_eq!(thread_params.personality.as_deref(), Some("pragmatic"));
         assert_eq!(thread_params.ephemeral, Some(true));
         assert_eq!(
-            thread_params.base_instructions.as_deref(),
-            Some("base instructions")
+            thread_params
+                .config
+                .as_ref()
+                .and_then(|config| config.get("model_reasoning_effort")),
+            Some(&json!("none"))
         );
         assert_eq!(
-            thread_params.developer_instructions.as_deref(),
-            Some("developer instructions")
+            thread_params
+                .config
+                .as_ref()
+                .and_then(|config| config.get("web_search")),
+            Some(&json!("live"))
         );
-        assert_eq!(
-            thread_params.extra.get("skipGitRepoCheck"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            thread_params.extra.get("webSearchMode"),
-            Some(&Value::String("live".to_string()))
-        );
-        assert_eq!(
-            thread_params.extra.get("webSearchEnabled"),
-            Some(&Value::Bool(false))
-        );
-        assert_eq!(
-            thread_params.extra.get("networkAccessEnabled"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            thread_params.extra.get("additionalDirectories"),
-            Some(&json!(["/tmp/one", "/tmp/two"]))
-        );
-        assert_eq!(
-            thread_params.extra.get("config"),
-            Some(&json!({"sandbox_workspace_write.network_access": true}))
-        );
+        assert!(thread_params.extra.get("webSearchMode").is_none());
+        assert!(thread_params.extra.get("webSearchEnabled").is_none());
         assert_eq!(
             thread_params.extra.get("dynamicTools"),
             Some(&json!([{
@@ -3229,14 +3217,6 @@ collaboration_mode = "plan"
                 "description": "Demo dynamic tool",
                 "inputSchema": {"type": "object"}
             }]))
-        );
-        assert_eq!(
-            thread_params.extra.get("experimentalRawEvents"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            thread_params.extra.get("persistExtendedHistory"),
-            Some(&Value::Bool(true))
         );
 
         let resume_params = build_thread_resume_params("thread_123", &options);
@@ -3249,32 +3229,22 @@ collaboration_mode = "plan"
         assert_eq!(resume_params.cwd.as_deref(), Some("/tmp/workspace"));
         assert_eq!(resume_params.approval_policy.as_deref(), Some("on-request"));
         assert_eq!(resume_params.sandbox.as_deref(), Some("workspace-write"));
-        assert_eq!(resume_params.personality.as_deref(), Some("pragmatic"));
-        assert_eq!(resume_params.extra.get("serviceTier"), Some(&json!("fast")));
         assert_eq!(
             resume_params
                 .config
                 .as_ref()
-                .and_then(|config| config.get("sandbox_workspace_write.network_access")),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(resume_params.persist_extended_history, Some(true));
-        assert_eq!(
-            resume_params.extra.get("sandboxPolicy"),
-            Some(&json!({"type": "dangerFullAccess"}))
+                .and_then(|config| config.get("model_reasoning_effort")),
+            Some(&json!("none"))
         );
         assert_eq!(
-            resume_params.extra.get("effort"),
-            Some(&Value::String("none".to_string()))
+            resume_params
+                .config
+                .as_ref()
+                .and_then(|config| config.get("web_search")),
+            Some(&json!("live"))
         );
-        assert_eq!(
-            resume_params.extra.get("summary"),
-            Some(&Value::String("auto".to_string()))
-        );
-        assert_eq!(
-            resume_params.extra.get("experimentalRawEvents"),
-            Some(&Value::Bool(true))
-        );
+        assert!(resume_params.extra.get("effort").is_none());
+        assert!(resume_params.extra.get("dynamicTools").is_none());
 
         let turn_params = build_turn_start_params(
             "thread_123",
@@ -3282,24 +3252,15 @@ collaboration_mode = "plan"
             &options,
             &TurnOptions::default(),
         );
-        assert_eq!(turn_params.model_provider.as_deref(), Some("mock_provider"));
-        assert_eq!(turn_params.effort.as_deref(), Some("none"));
+        assert!(turn_params.effort.is_none());
+        assert!(turn_params.extra.get("webSearchMode").is_none());
+        assert!(turn_params.extra.get("webSearchEnabled").is_none());
         assert_eq!(turn_params.summary.as_deref(), Some("auto"));
         assert_eq!(turn_params.personality.as_deref(), Some("pragmatic"));
         assert_eq!(turn_params.extra.get("serviceTier"), Some(&json!("fast")));
         assert_eq!(
             turn_params.sandbox_policy,
             Some(json!({"type": "dangerFullAccess"}))
-        );
-        assert_eq!(
-            turn_params.extra.get("collaborationMode"),
-            Some(&json!({
-                "mode": "default",
-                "settings": {
-                    "model": "gpt-5.2-codex",
-                    "reasoning_effort": "high"
-                }
-            }))
         );
     }
 
@@ -3348,22 +3309,18 @@ collaboration_mode = "plan"
                 "settings": { "model": "gpt-5.2-codex" }
             }))
         );
-        // thread/start does NOT send sandboxPolicy/effort/summary/ephemeral in
-        // extra (they are top-level params) — pin the exact key set.
+        // Thread defaults belong in `config`; legacy search extras do not.
         assert_eq!(
             sorted_extra_keys(&params.extra),
             vec![
                 "additionalDirectories",
                 "collaborationMode",
-                "config",
                 "dynamicTools",
                 "experimentalRawEvents",
                 "networkAccessEnabled",
                 "persistExtendedHistory",
                 "serviceTier",
                 "skipGitRepoCheck",
-                "webSearchEnabled",
-                "webSearchMode",
             ]
         );
     }
@@ -3380,15 +3337,12 @@ collaboration_mode = "plan"
                 "settings": { "model": "gpt-5.2-codex" }
             }))
         );
-        // thread/resume DOES send sandboxPolicy/effort/summary/ephemeral in
-        // extra, unlike thread/start — pin the exact key set.
+        // `dynamicTools` and legacy thread-default fields are absent on resume.
         assert_eq!(
             sorted_extra_keys(&params.extra),
             vec![
                 "additionalDirectories",
                 "collaborationMode",
-                "dynamicTools",
-                "effort",
                 "ephemeral",
                 "experimentalRawEvents",
                 "networkAccessEnabled",
@@ -3396,8 +3350,6 @@ collaboration_mode = "plan"
                 "serviceTier",
                 "skipGitRepoCheck",
                 "summary",
-                "webSearchEnabled",
-                "webSearchMode",
             ]
         );
     }
@@ -3427,8 +3379,6 @@ collaboration_mode = "plan"
                 "networkAccessEnabled",
                 "serviceTier",
                 "skipGitRepoCheck",
-                "webSearchEnabled",
-                "webSearchMode",
             ]
         );
     }
@@ -3551,31 +3501,23 @@ collaboration_mode = "plan"
             .model_reasoning_effort(ModelReasoningEffort::High)
             .service_tier(ServiceTier::Fast)
             .sandbox_policy(json!({"turn": true}))
-            .web_search_mode(WebSearchMode::Live)
             .skip_git_repo_check(true)
             .add_directory("/tmp/turn-dir")
             .build();
 
         let merged = ResolvedOptions::merge(&thread_options, &turn_options);
         assert_eq!(merged.model.as_deref(), Some("turn-model"));
-        assert_eq!(
-            merged.model_reasoning_effort,
-            Some(ModelReasoningEffort::High)
-        );
         assert_eq!(merged.service_tier, Some(ServiceTier::Fast));
         assert_eq!(merged.sandbox_policy, Some(json!({"turn": true})));
-        assert_eq!(merged.web_search_mode, Some(WebSearchMode::Live));
         assert_eq!(merged.skip_git_repo_check, Some(true));
         assert_eq!(
             merged.additional_directories,
             Some(vec!["/tmp/turn-dir".to_string()])
         );
         // Fields not set on the turn fall back to the thread-level values.
-        assert_eq!(merged.model_provider.as_deref(), Some("thread-provider"));
         assert_eq!(merged.working_directory.as_deref(), Some("/tmp/thread"));
         assert_eq!(merged.personality, Some(Personality::Friendly));
         assert_eq!(merged.approval_policy, Some(ApprovalMode::OnRequest));
-        assert_eq!(merged.web_search_enabled, Some(false));
         assert_eq!(merged.network_access_enabled, Some(false));
         assert_eq!(
             merged.model_reasoning_summary,
@@ -3611,7 +3553,6 @@ collaboration_mode = "plan"
 
         let turn_options = TurnOptions::builder()
             .model("gpt-5-turn-override")
-            .model_provider("provider-turn")
             .working_directory("/tmp/turn")
             .model_reasoning_effort(ModelReasoningEffort::High)
             .model_reasoning_summary(ModelReasoningSummary::Detailed)
@@ -3621,8 +3562,6 @@ collaboration_mode = "plan"
             .sandbox_policy(json!({"turn": true}))
             .skip_git_repo_check(true)
             .network_access_enabled(true)
-            .web_search_mode(WebSearchMode::Live)
-            .web_search_enabled(true)
             .add_directory("/tmp/turn-dir")
             .insert_extra("customTurnFlag", Value::Bool(true))
             .build();
@@ -3636,7 +3575,6 @@ collaboration_mode = "plan"
 
         assert_eq!(params.cwd.as_deref(), Some("/tmp/turn"));
         assert_eq!(params.model.as_deref(), Some("gpt-5-turn-override"));
-        assert_eq!(params.model_provider.as_deref(), Some("provider-turn"));
         assert_eq!(params.effort.as_deref(), Some("high"));
         assert_eq!(params.summary.as_deref(), Some("detailed"));
         assert_eq!(params.extra.get("serviceTier"), Some(&json!("fast")));
@@ -3649,14 +3587,6 @@ collaboration_mode = "plan"
         );
         assert_eq!(
             params.extra.get("networkAccessEnabled"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            params.extra.get("webSearchMode"),
-            Some(&Value::String("live".to_string()))
-        );
-        assert_eq!(
-            params.extra.get("webSearchEnabled"),
             Some(&Value::Bool(true))
         );
         assert_eq!(
