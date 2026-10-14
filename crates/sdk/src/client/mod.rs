@@ -371,10 +371,25 @@ impl CodexClient {
         config: StdioConfig,
         current_dir: Option<&Path>,
     ) -> Result<SpawnedStdio, ClientError> {
+        Self::spawn_stdio_owned_without_env(config, current_dir, &[]).await
+    }
+
+    /// [`Self::spawn_stdio_owned`], with `env_remove` removed from the
+    /// environment the child inherits. The removal comes before
+    /// [`StdioConfig::env`], so a variable `env` sets still reaches the child.
+    /// An embedder uses it to keep its own secrets from the app-server
+    /// without clearing variables the child needs, such as `HOME` and `PATH`,
+    /// and without changing the [`StdioConfig`] struct-literal API.
+    pub async fn spawn_stdio_owned_without_env(
+        config: StdioConfig,
+        current_dir: Option<&Path>,
+        env_remove: &[String],
+    ) -> Result<SpawnedStdio, ClientError> {
         let spawned = spawn_owned_stdio_transport(
             &config.codex_binary,
             &config.args,
             &config.env,
+            env_remove,
             current_dir,
         )
         .await?;

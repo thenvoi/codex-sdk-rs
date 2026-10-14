@@ -18,7 +18,17 @@ existing detached `spawn_stdio` behavior remains unchanged.
 
 Upstream PR: [thehumanworks/codex-sdk-rs#8](https://github.com/thehumanworks/codex-sdk-rs/pull/8).
 
-## 2. Weekly upstream replay
+## 2. Owned stdio without chosen environment variables
+
+`CodexClient::spawn_stdio_owned_without_env` is `spawn_stdio_owned` with a list
+of variable names removed from the environment the app-server inherits. The
+removal comes before `StdioConfig::env`, so a variable the embedder sets still
+reaches the child. tjam uses it to keep jamd's own secrets (the person's Band
+key, analytics keys) out of every Codex agent while the agent keeps `HOME`,
+`PATH` and the user's other variables. The existing `StdioConfig` struct and
+`spawn_stdio_owned` are unchanged.
+
+## 3. Weekly upstream replay
 
 `.github/workflows/jam-rebase-owned-stdio.yml` runs every Monday and on demand.
 It derives every fork-only commit from the default maintenance branch, replays
