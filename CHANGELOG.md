@@ -24,6 +24,13 @@
   field was always `None` and its type contradicted the structured object
   actually sent. Collaboration mode travels via `TurnOptions` /
   `ThreadOptions` (see bug fix below).
+- **Removed per-turn model-provider and web-search options.** Codex owns
+  `modelProvider` and web-search defaults on thread start and resume, not
+  `turn/start`. Migrate those calls to `ThreadOptions::builder()`.
+- **Replaced `ThreadStartParams::effort` with `config` and removed
+  `TurnStartParams::model_provider`.** Thread reasoning defaults now use
+  `config.model_reasoning_effort`. Explicit turn effort remains available
+  through `TurnOptions::builder().model_reasoning_effort(...)`.
 - **`ClientError` gains `Config(String)` and `Startup { message, log_path }`
   variants** (breaking for exhaustive matches). Invalid URLs/configuration
   now surface as `Config`; daemon spawn/readiness/port-conflict failures as
