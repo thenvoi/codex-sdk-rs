@@ -18,7 +18,23 @@ existing detached `spawn_stdio` behavior remains unchanged.
 
 Upstream PR: [thehumanworks/codex-sdk-rs#8](https://github.com/thehumanworks/codex-sdk-rs/pull/8).
 
-## 2. Owned stdio without chosen environment variables
+## 2. Native turn terminal status
+
+`ThreadEvent::TurnCompleted` carries `terminal_status: Option<String>`: the
+app-server's own status for the finished turn, such as `completed` or
+`interrupted`. Older servers can omit it. tjam uses it to report a turn the
+provider interrupted or cancelled as such, instead of as complete.
+
+## 3. Thread settings serialized as Codex config (JAM-232)
+
+`ThreadOptionsBuilder` sends reasoning effort as `config.model_reasoning_effort`
+and web search as `config.web_search` on thread start and resume, and model
+providers and web-search defaults are thread options only. Codex owns these on
+thread start and resume, not on `turn/start`, so the per-turn
+`model_provider` and web-search options and `ThreadStartParams::effort` are
+removed. Explicit per-turn reasoning effort remains on `TurnOptionsBuilder`.
+
+## 4. Owned stdio without chosen environment variables
 
 `CodexClient::spawn_stdio_owned_without_env` is `spawn_stdio_owned` with a list
 of variable names removed from the environment the app-server inherits. The
@@ -28,7 +44,14 @@ key, analytics keys) out of every Codex agent while the agent keeps `HOME`,
 `PATH` and the user's other variables. The existing `StdioConfig` struct and
 `spawn_stdio_owned` are unchanged.
 
-## 3. Weekly upstream replay
+## 5. No console window for stdio children on Windows
+
+Every SDK-owned stdio child (`spawn_stdio`, `spawn_stdio_owned` and
+`spawn_stdio_owned_without_env`) starts with `CREATE_NO_WINDOW`, so a GUI host
+such as the tjam desktop does not flash a console window for the app-server.
+Other platforms are unchanged.
+
+## 6. Weekly upstream replay
 
 `.github/workflows/jam-rebase-owned-stdio.yml` runs every Monday and on demand.
 It derives every fork-only commit from the default maintenance branch, replays
@@ -55,6 +78,11 @@ until `Cargo.toml` and `Cargo.lock` pin the new revision.
    `--force-with-lease`, and dispatch this workflow once. Do not merge a recovery
    branch into the maintenance branch: the merge commit would itself become a
    fork-only replay input.
+
+Merge every pull request into `jam-owned-stdio` with squash or rebase. The
+replay cherry-picks each fork-only commit, and it cannot cherry-pick a merge
+commit. A change merged only into `jam-owned-stdio-latest` is lost at the next
+replay, because that branch is regenerated from `jam-owned-stdio`.
 
 The July 2026 streamed-turn identity patch is intentionally absent from the
 current fork delta because upstream now exposes `StreamedTurn::turn_id()` and
