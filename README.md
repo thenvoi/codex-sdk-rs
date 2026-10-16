@@ -73,6 +73,7 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+`ThreadEvent::TurnCompleted.terminal_status` preserves the optional native app-server status, including `completed` and `interrupted`.
 `ThreadEventRenderer` converts those events into terminal-agnostic, typed
 markdown fragments, streams text deltas without repeating completed snapshots,
 and provides a visible fallback for every `ThreadItem` variant. Display-only
