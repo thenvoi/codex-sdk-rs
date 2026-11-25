@@ -911,6 +911,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_waiting_handler_does_not_hold_later_notifications_or_requests() {
+        let (client, inbound_tx, mut outbound_rx) = test_client();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+
+        client
+            .set_dynamic_tool_call_handler(move |params| {
+                let release_rx = Arc::clone(&release_rx);
+                async move {
+                    let tool = params.extra.get("tool").cloned().unwrap_or(Value::Null);
+                    // The first tool waits for a person, as a question to a human does.
+                    if tool == json!("ask") {
+                        let waiting = release_rx.lock().await.take();
+                        if let Some(waiting) = waiting {
+                            let _ = waiting.await;
+                        }
+                    }
+                    let mut response = sr::DynamicToolCallResponse::default();
+                    response.extra.insert("output".to_string(), tool);
+                    Ok(response)
+                }
+            })
+            .await;
+
+        for frame in [
+            json!({ "id": 1, "method": "item/tool/call", "params": { "tool": "ask" } }),
+            json!({ "method": "thread/tokenUsage/updated", "params": {} }),
+            json!({ "id": 2, "method": "item/tool/call", "params": { "tool": "reply" } }),
+        ] {
+            inbound_tx
+                .send(Ok(frame))
+                .await
+                .expect("send inbound frame");
+        }
+
+        // The notification behind the waiting call is published.
+        let event = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("a notification behind a waiting handler was not published")
+            .expect("event receive");
+        assert!(
+            matches!(event, ServerEvent::Notification(_)),
+            "unexpected event: {event:?}"
+        );
+
+        // The later call is answered while the first still waits.
+        let outbound = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await
+            .expect("a request behind a waiting handler was not answered")
+            .expect("expected outbound response frame");
+        assert_eq!(outbound.get("id"), Some(&json!(2)));
+        assert_eq!(outbound.pointer("/result/output"), Some(&json!("reply")));
+
+        release_tx.send(()).expect("release the waiting handler");
+        let outbound = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await
+            .expect("timed out waiting for the first response")
+            .expect("expected outbound response frame");
+        assert_eq!(outbound.get("id"), Some(&json!(1)));
+        assert_eq!(outbound.pointer("/result/output"), Some(&json!("ask")));
+    }
+
+    #[tokio::test]
     async fn handler_error_is_answered_with_error_response() {
         let (client, inbound_tx, mut outbound_rx) = test_client();
 

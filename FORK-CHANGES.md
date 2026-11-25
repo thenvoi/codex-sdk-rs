@@ -51,7 +51,23 @@ Every SDK-owned stdio child (`spawn_stdio`, `spawn_stdio_owned` and
 such as the tjam desktop does not flash a console window for the app-server.
 Other platforms are unchanged.
 
-## 6. Weekly upstream replay
+## 6. Server-request handlers run as their own tasks
+
+A registered server-request handler (`set_*_handler`) starts as a Tokio task.
+The inbound loop does not wait for it: it goes on reading notifications,
+responses and later server requests, and each handler's result is sent when
+that handler finishes.
+
+Jam registers handlers that wait for a person: a question to a human, a
+permission decision. Awaited inside the inbound loop, one such handler held
+every later frame of that app-server connection until the person answered. A
+Codex that keeps working while a tool call is pending then showed no activity
+and could not complete its other calls.
+
+Responses can now leave in a different order than their requests arrived. Each
+response carries its request id.
+
+## 7. Weekly upstream replay
 
 `.github/workflows/jam-rebase-owned-stdio.yml` runs every Monday and on demand.
 It derives every fork-only commit from the default maintenance branch, replays

@@ -67,9 +67,12 @@ macro_rules! define_server_request_handlers {
             )+
         }
 
-        /// Runs the registered handler for `request`, if any, and sends its
-        /// result (or error) back over the transport. Returns `false` when no
-        /// handler is registered so the request is published as an event.
+        /// Starts the registered handler for `request`, if any, as its own
+        /// task. The task sends the handler's result (or error) back over the
+        /// transport. A handler may wait for a person, so the inbound loop
+        /// never waits for it: it goes on reading notifications, responses
+        /// and later requests. Returns `false` when no handler is registered
+        /// so the request is published as an event.
         pub(super) async fn try_auto_handle_server_request(
             inner: &Arc<Inner>,
             request: &ServerRequestEvent,
@@ -87,8 +90,15 @@ macro_rules! define_server_request_handlers {
                             return false;
                         };
 
-                        let response = handler(params.clone()).await;
-                        send_server_request_handler_result(inner, id, response, $context).await
+                        let inner = Arc::clone(inner);
+                        let id = id.clone();
+                        let params = params.clone();
+                        tokio::spawn(async move {
+                            let response = handler(params).await;
+                            send_server_request_handler_result(&inner, &id, response, $context)
+                                .await;
+                        });
+                        true
                     }
                 )+
                 _ => false,
